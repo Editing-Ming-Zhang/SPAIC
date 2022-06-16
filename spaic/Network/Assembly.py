@@ -8,8 +8,9 @@ Created on 2020/8/5
 @description:
 """
 import spaic
+
 from collections import OrderedDict
-from ..Network.BaseModule import BaseModule
+from ..Network.BaseModule import BaseModule, VariableAgent
 from abc import ABC, abstractmethod
 from torch import nn
 from typing import List
@@ -86,23 +87,45 @@ class Assembly(BaseModule):
         init_count = spaic.global_assembly_init_count
 
         self.set_name(name)
-        self._backend:spaic.Backend = None
-        self._groups: OrderedDict[str,Assembly] = OrderedDict()
+        self._backend: spaic.Backend = None
+        self._groups: OrderedDict[str, Assembly] = OrderedDict()
         self._connections: OrderedDict[str, spaic.Connection] = OrderedDict()
+        self._projections: OrderedDict[str, spaic.Projection] = OrderedDict()
         self._supers = list()
         self._input_connections = list()
         self._output_connections = list()
         self.num = 0
         self.position = None
-        self._var_names = []
+        # _var_names 和 _var_dict移动到了BaseModule 作为网络各模块的通用属性
+        # self._var_names = []
+        # self._var_dict = dict()
         self.context_enterpoint = 0
         self.type = []
-
-
 
     # front-end functions
     def add_type(self, type):
         self.type.append(type)
+
+    def get_labeled_name(self, key: str):
+        if isinstance(key, str):
+            if '[updated]' in key:
+                return self.id + ':' +'{'+key.replace('[updated]',"")+'}' + '[updated]'
+            else:
+                return self.id + ':' +'{'+key+'}'
+        elif isinstance(key, VariableAgent):
+            return key.var_name
+        elif isinstance(key, list) or isinstance(key, tuple):
+            keys = []
+            for k in key:
+                if isinstance(k, str):
+                    if '[updated]' in k:
+                        mk = self.id + ':' + '{' + k.replace('[updated]', "") + '}' + '[updated]'
+                    else:
+                        mk = self.id + ':' + '{' + k + '}'
+                    keys.append(mk)
+                elif isinstance(k, VariableAgent):
+                    keys.append(k.var_name)
+            return keys
 
     def add_assembly(self, name, assembly):
         """
@@ -190,7 +213,6 @@ class Assembly(BaseModule):
                 if self._connections[ckey].assembly_linked(assembly):
                     del self._connections[ckey]
 
-
     def add_connection(self, name, connection):
         """
         Add the connection between two member assemblies of this assembly.
@@ -209,8 +231,8 @@ class Assembly(BaseModule):
 
         """
         if self._backend: self._backend.builded = False
-        assert connection.pre_assembly in self._groups.values(), 'pre_assembly %s is not in the group'%connection.pre_assembly.name
-        assert connection.post_assembly in self._groups.values(), 'post_assembly %s is not in the group'%connection.post_assembly.name
+        assert connection.pre_assembly in self.get_groups(), 'pre_assembly %s is not in the group'%connection.pre_assembly.name
+        assert connection.post_assembly in self.get_groups(), 'post_assembly %s is not in the group'%connection.post_assembly.name
         if name in self._connections:
             if connection is self._connections[name]:
                 raise ValueError(" connection is already in the assembly's connection list")
@@ -259,6 +281,33 @@ class Assembly(BaseModule):
             del self._connections[name]
             del self.__dict__[name]
 
+    def add_projection(self, name, projection):
+        """
+        Add the projection between two member assemblies of this assembly.
+
+        Args:
+            name(str): name of this projection
+            projection(Projection): the new projection to be added to the assembly
+
+        Returns:
+            None
+
+        Examples:
+
+            >>> TestAsb = Assembly() # assuming contains neurongroups and network structure
+            >>> TestAsb.add_projection(name='prj1', projection=Projection(self.layer1, self.layer2, link_type='full'))
+
+        """
+        if self._backend: self._backend.builded = False
+        assert projection.pre_assembly in self._groups.values(), 'pre_assembly %s is not in the group' % projection.pre_assembly.name
+        assert projection.post_assembly in self._groups.values(), 'post_assembly %s is not in the group' % projection.post_assembly.name
+        if name in self._projections:
+            if projection is self._projections[name]:
+                raise ValueError(" projection is already in the assembly's projection list")
+            else:
+                raise ValueError("duplicated name for the projection")
+        else:
+            self.__setattr__(name, projection)
 
     def copy_assembly(self, name, assembly):
         """
@@ -283,7 +332,6 @@ class Assembly(BaseModule):
         if self._backend: self._backend.builded = False
         rv = assembly.structure_copy(name)
         self.__setattr__(name, rv)
-
 
     def replace_assembly(self, old_assembly, new_assembly):
         """
@@ -317,8 +365,6 @@ class Assembly(BaseModule):
         for con in self._connections.values():
             if con.assembly_linked(old_assembly):
                 con.replace_assembly(old_assembly, new_assembly)
-
-
 
     def merge_assembly(self, assembly):
         """
@@ -364,7 +410,6 @@ class Assembly(BaseModule):
                             break
             else:
                 self._connections[key] = value
-
 
     def select_assembly(self, assemblies, name=None, with_connection=True):
         """
@@ -412,8 +457,6 @@ class Assembly(BaseModule):
 
         return new_asb
 
-
-
     def assembly_hide(self):
         """
         Prohibit this assembly from building and display, but keep this assembly for later use.
@@ -434,8 +477,6 @@ class Assembly(BaseModule):
         for key, value in self._connections.items():
             value.hided = True
 
-
-
     def assembly_show(self):
         """
         Make the hided assembly to normal assembly.
@@ -454,8 +495,6 @@ class Assembly(BaseModule):
             value.assembly_show()
         for key, value in self._connections.items():
             value.hided = False
-
-
 
     def get_groups(self, recursive=True):
         """
@@ -477,7 +516,6 @@ class Assembly(BaseModule):
         else:
             return [self]
 
-
     def get_leveled_groups(self):
         """
         Get list of all sup groups in leveled order, such as [ [self], [subgroups], [subgroup of subgroups], ...]
@@ -497,8 +535,6 @@ class Assembly(BaseModule):
                     else:
                         leveled_groups.append(groups)
         return leveled_groups
-
-
 
     def get_assemblies(self, recursive=True):
         """
@@ -574,7 +610,6 @@ class Assembly(BaseModule):
         else:
             return item in self._connections.values()
 
-
     def get_connections(self, recursive=True):
         """
             Get the Connections in this assembly
@@ -591,8 +626,9 @@ class Assembly(BaseModule):
             connections = []
             for asb in all_assmblies:
                 connections.extend(asb.get_connections(recursive=False))
+            for proj in self._projections.values():
+                connections.extend(proj.get_connections(recursive=True))
             return connections
-
 
     def get_var_names(self):
         """
@@ -619,10 +655,12 @@ class Assembly(BaseModule):
             repr_str += g.get_str(level)
         for c in self._connections.values():
             repr_str += c.get_str(level)
+        for p in self._projections.values():
+            repr_str += p.get_str(level)
         return repr_str
 
     # back-end functions
-    def build(self, backend=None, strategy=2):
+    def build(self, backend=None, strategy=0):
         """
         Build the front-end network structure into a back-end computation graph.
 
@@ -634,112 +672,22 @@ class Assembly(BaseModule):
 
         """
         self._backend = backend
+        print("builder for assembly has been called")
         # for asb in self.get_groups():
         #     asb.set_id()
         # for con in self.get_connections():
         #     con.set_id()
 
-        if strategy == 1:
-            pass
-        elif strategy == 2:
-            self.strategy_build(self.get_groups(False))
-        else:
-            for key, value in self._connections.items():
-                value.build(backend)
-            for key, value in self._groups.items():
-                value.build(backend)
+        for key, value in self._connections.items():
+            value.build(backend)
+        for key, value in self._groups.items():
+            value.build(backend)
 
-    def strategy_build(self, all_groups=None):
-        builded_groups = []
-        unbuild_groups = {}
-        output_groups = []
-        level = 0
-        from ..Neuron.Node import Encoder, Decoder, Generator
-        # ===================从input开始按深度构建计算图==============
-        for group in all_groups:
-            if isinstance(group, Encoder) or isinstance(group, Generator) or (self._class_label == '<asb>'):
-                # 如果是input节点，则开始深度构建计算图
-                group.build(self._backend)
-                builded_groups.append(group)
-                # all_groups.remove(group)
-                for conn in group._output_connections:
-                    builded_groups, unbuild_groups = self.deep_build_conn(conn, builded_groups,
-                                                                          unbuild_groups, level)
-            elif isinstance(group, Decoder):
-                # 如果节点是output节点，则放入output组在最后进行构建
-                output_groups.append(group)
-            else:
-                if (not group._input_connections) and (not group._output_connections):
-                    # 孤立点的情况
-                    import warnings
-                    warnings.warn('Isolated group occurs, please check the network.')
-                    group.build(self._backend)
-
-        if unbuild_groups:
-            import warnings
-            warnings.warn('Loop occurs')
-        # ====================开始构建环路==================
-        for key in unbuild_groups.keys():
-            for i in unbuild_groups[key]:
-                if i in builded_groups:
-                    continue
-                else:
-                    builded_groups = self.deep_build_neurongroup_with_delay(i, builded_groups)
-
-        # ====================构建output节点===============
-        for group in output_groups:
-            group.build(self._backend)
-
-    def deep_build_neurongroup(self, neuron=None, builded_groups=None, unbuild_groups=None, level=0):
-        conns = [i for i in neuron._input_connections if i not in builded_groups]
-        # conns表示神经元还没有被建立的依赖连接
-        if conns: #==========如果存在conns说明有input_connections还没有被build===========
-            if str(level) in unbuild_groups.keys():
-                unbuild_groups[str(level)].append(neuron)
-            else:
-                unbuild_groups[str(level)] = [neuron]
-            return builded_groups, unbuild_groups
-        else:
-
-            if neuron not in builded_groups:
-                if neuron._class_label == '<asb>':
-                    neuron.build(self._backend, 2)
-                else:
-                    neuron.build(self._backend)
-                builded_groups.append(neuron)
-                for conn in neuron._output_connections:
-                    builded_groups, unbuild_groups = self.deep_build_conn(conn, builded_groups,
-                                                                          unbuild_groups, level)
-            return builded_groups, unbuild_groups
-
-    def deep_build_conn(self, conn=None, builded_groups=None, unbuild_groups=None, level=0):
-        conn.build(self._backend)
-        builded_groups.append(conn)
-        level += 1
-        builded_groups, unbuild_groups = self.deep_build_neurongroup(conn.post_assembly, builded_groups, unbuild_groups, level)
-        return builded_groups, unbuild_groups
-
-    def deep_build_conn_with_delay(self, conn, builded_groups):
-        conn.build(self._backend)
-        builded_groups.append(conn)
-        if conn.post_assembly not in builded_groups:
-            builded_groups = self.deep_build_neurongroup_with_delay(conn.post_assembly, builded_groups)
-        return builded_groups
-
-    def deep_build_neurongroup_with_delay(self, neuron, builded_groups):
-        conns = [i for i in neuron._input_connections if i not in builded_groups]
-        if conns:
-            for conn in conns:
-                conn.build(self._backend)
-                builded_groups.append(conn)
-            neuron.build(self._backend)
-        else:
-            neuron.build(self._backend)
-        builded_groups.append(neuron)
-        for conn in neuron._output_connections:
-            if conn not in builded_groups:
-                builded_groups = self.deep_build_conn_with_delay(conn, builded_groups)
-        return builded_groups
+    def build_projections(self, backend):
+        for proj in self._projections.values():
+            proj.build(backend)
+        for group in self._groups.values():
+            group.build_projections(backend)
 
     def set_id(self):
         """
@@ -770,8 +718,6 @@ class Assembly(BaseModule):
                 self.id = pre_id + '_' + self.id
         return self.id
 
-
-
     def register_connection(self, connection_obj, presynaptic):
         '''
         Register input or output connection of this assembly
@@ -782,31 +728,21 @@ class Assembly(BaseModule):
             None
 
         '''
-
-        # connection_obj.post_groups
-        # if presynaptic:
-        #     if connection_obj not in self._output_connections:
-        #         self._output_connections.append(connection_obj)
-        # else:
-        #     if connection_obj not in self._input_connections:
-        #         self._input_connections.append(connection_obj)
-
-        ###对复杂结构的assembly也进行注册
-        for key, i in self._groups.items():
-            if presynaptic:
-                if connection_obj not in i._output_connections:
-                    i._output_connections.append(connection_obj)
-            else:
-                if connection_obj not in i._input_connections:
-                    i._input_connections.append(connection_obj)
+        # ###对复杂结构的assembly也进行注册
+        # for key, i in self._groups.items():
+        #     if presynaptic:
+        #         if connection_obj not in i._output_connections:
+        #             i._output_connections.append(connection_obj)
+        #     else:
+        #         if connection_obj not in i._input_connections:
+        #             i._input_connections.append(connection_obj)
+        # # connection_obj.post_groups
         if presynaptic:
             if connection_obj not in self._output_connections:
                 self._output_connections.append(connection_obj)
         else:
             if connection_obj not in self._input_connections:
                 self._input_connections.append(connection_obj)
-
-
 
     def structure_copy(self, name=None):
         """
@@ -868,11 +804,6 @@ class Assembly(BaseModule):
             # record the variable number before enter the context
             self.context_enterpoint = main_vars.__len__() -1
 
-
-
-
-
-
     def __exit__(self, exc_type, exc_val, exc_tb):
         import __main__
         main_vars = vars(__main__)
@@ -891,9 +822,9 @@ class Assembly(BaseModule):
         # keys = list(globals().keys())
         # print(keys)
 
-
     def __setattr__(self, name, value):
-        from ..Network.Connection import Connection
+        from ..Network.Topology import Connection
+        from ..Network.Topology import Projection
         super(Assembly, self).__setattr__(name, value)
         if (self.__class__ is spaic.NeuronGroup) or (issubclass(self.__class__, spaic.Node)):
             # If class is NeuronGroup or the subclass of Node, do not add other object to it.
@@ -910,6 +841,12 @@ class Assembly(BaseModule):
             self._connections[name] = value
             value.set_name(name)
             value.add_super(self)
+        elif isinstance(value, Projection):
+            # if it is not Connection but belongs to projection (pure projection)
+            if self._backend: self._backend.builded = False
+            self._projections[name] = value
+            value.set_name(name)
+            value.add_super(self)
 
     def __delattr__(self, name):
         super(Assembly, self).__delattr__(name)
@@ -921,9 +858,6 @@ class Assembly(BaseModule):
             if self._backend: self._backend.builded = False
             self._connections[name].del_super(self)
             del self._connections[name]
-
-
-
 
     def __repr__(self):
 

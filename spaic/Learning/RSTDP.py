@@ -53,6 +53,7 @@ class RSTDP(Learner):
                 reward = reward.transpose(1, 0)
                 reward = reward.repeat(1, eligibility.shape[1])
             weight.add_(self.learning_rate * reward * eligibility)
+        return weight
 
     def build(self, backend):
         super(RSTDP, self).build(backend)
@@ -61,7 +62,7 @@ class RSTDP(Learner):
         for (key, tau_var) in self._tau_constant_variables.items():
             tau_var = np.exp(-self.dt / tau_var)
             shape = ()
-            backend.add_variable(key, shape, value=tau_var)
+            self.variable_to_backend(key, shape, value=tau_var)
 
         for (key, var) in self._constant_variables.items():
             if isinstance(var, np.ndarray):
@@ -78,11 +79,11 @@ class RSTDP(Learner):
                     shape = ()
             else:
                 shape = ()
-            backend.add_variable(key, shape, value=var)
+            self.variable_to_backend(key, shape, value=var)
 
         permute_name = 'rstdp_permute_dim'
         permute_dim_value = [1, 0]
-        backend.add_variable(permute_name, shape=None, value=permute_dim_value, is_constant=True)
+        self.variable_to_backend(permute_name, shape=None, value=permute_dim_value, is_constant=True)
         reward_name = 'Output_Reward[updated]'
 
         # Traverse all trainable connections
@@ -90,7 +91,7 @@ class RSTDP(Learner):
             preg = conn.pre_assembly
             postg = conn.post_assembly
             pre_name = conn.get_input_name(preg, postg)
-            post_name = conn.get_post_name(postg, conn.post_var_name)
+            post_name = conn.get_group_name(postg, 'O')
             weight_name = conn.get_link_name(preg, postg, 'weight')
 
             # p_plus tracks the influence of presynaptic spikes; p_minus tracks the influence of postsynaptic spikes
@@ -102,9 +103,9 @@ class RSTDP(Learner):
                 pre_shape = [pre_shape_temp[0], pre_shape_temp[1] * pre_shape_temp[2] * pre_shape_temp[3]]
             else:
                 pre_shape = pre_shape_temp
-            backend.add_variable(p_plus_name, pre_shape, value=0.0)
-            backend.add_variable(p_minus_name, backend._variables[post_name].shape, value=0.0)
-            backend.add_variable(eligibility_name, backend._variables[weight_name].shape, value=0.0)
+            self.variable_to_backend(p_plus_name, pre_shape, value=0.0)
+            self.variable_to_backend(p_minus_name, backend._variables[post_name].shape, value=0.0)
+            self.variable_to_backend(eligibility_name, backend._variables[weight_name].shape, value=0.0)
 
             # Equations
             # p_plus *= np.exp(-dt / tau_plus)
@@ -140,7 +141,7 @@ class RSTDP(Learner):
             else:
                 backend.add_operation(['post_pre', 'mat_mult', 'p_minus_permute', pre_name])
             backend.add_operation([eligibility_name, 'add', 'pre_post', 'post_pre'])
-            backend.register_standalone(None, self.weight_update, [weight_name, eligibility_name, reward_name])
+            backend.add_operation([weight_name, self.weight_update, weight_name, eligibility_name, reward_name])
 Learner.register('rstdp', RSTDP)
 
 
@@ -195,6 +196,7 @@ class RSTDPET(Learner):
                 reward = reward.transpose(1, 0)
                 reward = reward.repeat(1, eligibility_trace.shape[1])
             weight.add_(self.learning_rate * self.dt * reward * eligibility_trace)
+        return weight
 
     def build(self, backend):
         super(RSTDPET, self).build(backend)
@@ -203,12 +205,12 @@ class RSTDPET(Learner):
         for (key, tau_var) in self._tau_constant_variables.items():
             tau_var = np.exp(-self.dt / tau_var)
             shape = ()
-            backend.add_variable(key, shape, value=tau_var)
+            self.variable_to_backend(key, shape, value=tau_var)
 
         for (key, tau_membrane_var) in self._tau_membrane_variables.items():
             tau_membrane_var = self.dt/tau_membrane_var
             shape = ()  # (1, neuron_num)
-            backend.add_variable(key, shape, value=tau_membrane_var)
+            self.variable_to_backend(key, shape, value=tau_membrane_var)
 
         for (key, var) in self._constant_variables.items():
             if isinstance(var, np.ndarray):
@@ -225,11 +227,11 @@ class RSTDPET(Learner):
                     shape = ()
             else:
                 shape = ()
-            backend.add_variable(key, shape, value=var)
+            self.variable_to_backend(key, shape, value=var)
 
         view_name = 'rstdpet_view_dim'
         view_dim_value = [-1]
-        backend.add_variable(view_name, shape=None, value=view_dim_value, is_constant=True)
+        self.variable_to_backend(view_name, shape=None, value=view_dim_value, is_constant=True)
         reward_name = 'Output_Reward[updated]'
 
         # Traverse all trainable connections
@@ -238,7 +240,7 @@ class RSTDPET(Learner):
             preg = conn.pre_assembly
             postg = conn.post_assembly
             pre_name = conn.get_input_name(preg, postg)
-            post_name = conn.get_post_name(postg, conn.post_var_name)
+            post_name = conn.get_group_name(postg, 'O')
             weight_name = conn.get_link_name(preg, postg, 'weight')
 
             # p_plus tracks the influence of presynaptic spikes; p_minus tracks the influence of postsynaptic spikes
@@ -246,10 +248,10 @@ class RSTDPET(Learner):
             p_minus_name = post_name + '_{p_minus}'
             eligibility_name = weight_name + '_{eligibility}'
             eligibility_trace_name = weight_name + '_{eligibility_trace}'
-            backend.add_variable(p_plus_name, backend._variables[pre_name].shape[1:], value=0.0)
-            backend.add_variable(p_minus_name, backend._variables[post_name].shape[1:], value=0.0)
-            backend.add_variable(eligibility_name, backend._variables[weight_name].shape, value=0.0)
-            backend.add_variable(eligibility_trace_name, backend._variables[weight_name].shape, value=0.0)
+            self.variable_to_backend(p_plus_name, backend._variables[pre_name].shape[1:], value=0.0)
+            self.variable_to_backend(p_minus_name, backend._variables[post_name].shape[1:], value=0.0)
+            self.variable_to_backend(eligibility_name, backend._variables[weight_name].shape, value=0.0)
+            self.variable_to_backend(eligibility_trace_name, backend._variables[weight_name].shape, value=0.0)
 
             # Equations
             # pre = pre.view(-1)
@@ -283,6 +285,6 @@ class RSTDPET(Learner):
             backend.add_operation(['eligibility_trace_temp', 'var_mult', 'tau_e', eligibility_name + '[updated]'])
             backend.add_operation([eligibility_trace_name, 'var_linear', 'tau_e_trace', eligibility_trace_name, 'eligibility_trace_temp'])
 
-            backend.register_standalone(None, self.weight_update, [weight_name, eligibility_trace_name, reward_name])
+            backend.add_operation([None, self.weight_update, weight_name, eligibility_trace_name, reward_name])
 
 Learner.register('rstdpet', RSTDPET)

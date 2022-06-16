@@ -51,6 +51,7 @@ class Conv2d_STDP(Learner):
         # Compute weight update based on the eligibility value of the past timestep.
         with torch.no_grad():
             weight.add_(self.learning_rate * eligibility)
+            return weight
 
     def build(self, backend):
         super(Conv2d_STDP, self).build(backend)
@@ -59,7 +60,7 @@ class Conv2d_STDP(Learner):
         for (key, tau_var) in self._tau_constant_variables.items():
             tau_var = np.exp(-self.dt / tau_var)
             shape = ()
-            backend.add_variable(key, shape, value=tau_var)
+            self.variable_to_backend(key, shape, value=tau_var)
 
         for (key, var) in self._constant_variables.items():
             if isinstance(var, np.ndarray):
@@ -76,11 +77,11 @@ class Conv2d_STDP(Learner):
                     shape = ()
             else:
                 shape = ()
-            backend.add_variable(key, shape, value=var)
+            self.variable_to_backend(key, shape, value=var)
 
         permute_name = 'conv2d_stdp_permute_dim'
         permute_dim_value = [0, 2, 1]
-        backend.add_variable(permute_name, shape=None, value=permute_dim_value, is_constant=True)
+        self.variable_to_backend(permute_name, shape=None, value=permute_dim_value, is_constant=True)
 
         # Traverse all trainable connections
         for conn in self.trainable_connections.values():
@@ -89,7 +90,7 @@ class Conv2d_STDP(Learner):
             preg = conn.pre_assembly
             postg = conn.post_assembly
             pre_name = conn.get_input_name(preg, postg)
-            post_name = conn.get_post_name(postg, conn.post_var_name)
+            post_name = conn.get_group_name(postg, 'O')
             weight_name = conn.get_link_name(preg, postg, 'weight')
             out_channels, in_channels, kh, kw = backend._variables[weight_name].size()  # (out_channels, in_channels, kh, kw)
             padding = conn.padding
@@ -112,18 +113,18 @@ class Conv2d_STDP(Learner):
             p_minus_value = p_minus_value_temp.reshape(p_minus_value_temp.shape[0], p_minus_value_temp.shape[1], -1)
             view_dim_value = [out_channels, in_channels, kh, kw]
 
-            backend.add_variable(p_plus_name, p_plus_value.shape, value=p_plus_value)
-            backend.add_variable(p_minus_name, p_minus_value.shape, value=p_minus_value)
-            backend.add_variable(eligibility_name, backend._variables[weight_name].shape, value=0.0)
-            backend.add_variable(kh_name, shape=(), value=kh, is_constant=True)
-            backend.add_variable(kw_name, shape=(), value=kw, is_constant=True)
-            backend.add_variable(padding_name, shape=(), value=padding, is_constant=True)
-            backend.add_variable(stride_name, shape=(), value=stride, is_constant=True)
-            backend.add_variable(view_name, shape=None, value=view_dim_value, is_constant=True)
+            self.variable_to_backend(p_plus_name, p_plus_value.shape, value=p_plus_value)
+            self.variable_to_backend(p_minus_name, p_minus_value.shape, value=p_minus_value)
+            self.variable_to_backend(eligibility_name, backend._variables[weight_name].shape, value=0.0)
+            self.variable_to_backend(kh_name, shape=(), value=kh, is_constant=True)
+            self.variable_to_backend(kw_name, shape=(), value=kw, is_constant=True)
+            self.variable_to_backend(padding_name, shape=(), value=padding, is_constant=True)
+            self.variable_to_backend(stride_name, shape=(), value=stride, is_constant=True)
+            self.variable_to_backend(view_name, shape=None, value=view_dim_value, is_constant=True)
 
             sum_dim_name = 'conv2d_stdp_sum'
             sum_dim_value = 0
-            backend.add_variable(sum_dim_name, shape=(), value=sum_dim_value, is_constant=True)
+            self.variable_to_backend(sum_dim_name, shape=(), value=sum_dim_value, is_constant=True)
 
             # # Equations
             # pre_temp = im2col_indices(pre, kh, kw, padding, stride)
@@ -163,6 +164,6 @@ class Conv2d_STDP(Learner):
             backend.add_operation(['eligibility_sum', 'reduce_sum', 'eligibility_temp', sum_dim_name])
             backend.add_operation([eligibility_name, 'view', 'eligibility_sum', view_name])
 
-            backend.register_standalone(None, self.weight_update, [weight_name, eligibility_name])
+            backend.add_operation([weight_name, self.weight_update, weight_name, eligibility_name])
 
 Learner.register('conv2d_stdp', Conv2d_STDP)

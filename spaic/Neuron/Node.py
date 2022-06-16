@@ -24,7 +24,7 @@ class Node(Assembly):
         super(Node, self).__init__()
 
         self._dt = dt
-        self._time = None
+        self._time = kwargs.get('time', None)
         self.coding_var_name = coding_var_name
         position = kwargs.get('position', None)
         if position == None:
@@ -47,18 +47,28 @@ class Node(Assembly):
             self.is_encoded = kwargs.get('is_encoded', False)
 
         # 单神经元多脉冲的语音数据集的shape包含脉冲时间以及发放神经元标签，所以不能通过np.prod(shape)获取num，最好还是外部输入num
+        assert num is not None or shape is not None, "One of the shape and number must not be None"
         if num is None:
-            raise ValueError('Please set the number of node')
+            if coding_method == 'mstb' or coding_method == 'sstb':
+                raise ValueError('Please set the number of node')
+            self.num = np.prod(shape)
         else:
             self.num = num
 
+        self.num = int(self.num)  # 统一数据格式为Python内置格式
+
         if shape is None:
             if self.is_encoded:
-                self.shape = (1, 1, num)
+                self.shape = (1, 1, self.num)
             else:
-                self.shape = (1, num)
+                self.shape = (1, self.num)
         else:
-            self.shape = tuple([1] + list(shape))
+            if coding_method == 'mstb' or coding_method == 'sstb':
+                self.shape = (1, self.num)
+            elif self.is_encoded:
+                self.shape = tuple([1, 1] + list(shape))
+            else:
+                self.shape = tuple([1] + list(shape))
 
         if node_type == ('excitatory', 'inhibitory', 'pyramidal', '...'):
             self.type = None
@@ -75,8 +85,8 @@ class Node(Assembly):
         if self.dec_target is not None:
             # The size of predict, reward and action is equal to batch_size
             self.predict = np.zeros((1,))
-            self.reward = np.zeros((1,))
-            self.action = np.zeros((1,))
+            # self.reward = np.zeros((1,))
+            # self.action = np.zeros((1,))
 
         # Parameters of initial operation
         self.index = 0
@@ -85,7 +95,10 @@ class Node(Assembly):
 
     @property
     def dt(self):
-        return self._dt
+        if self._dt is None:
+            return self._backend.dt
+        else:
+            return self._dt
 
     @dt.setter
     def dt(self, dt):
@@ -93,12 +106,14 @@ class Node(Assembly):
 
     @property
     def time(self):
-        self._time = self._backend.runtime
-        return self._time
+        if self._time is None:
+            return self._backend.runtime
+        else:
+            return self._time
 
     @property
     def time_step(self):
-        return int(self._backend.runtime / self._dt)
+        return int(self.time / self.dt)
 
 
     @time.setter
@@ -193,10 +208,10 @@ class Encoder(Node):
         self.batch_size = None
         self.new_input = True
         coding_method = coding_method.lower()
-        if coding_method == 'null':
-            self.is_encoded = True
-        else:
-            self.is_encoded = kwargs.get('is_encoded', False)
+        # if coding_method == 'null':
+        #     self.is_encoded = True
+        # else:
+        #     self.is_encoded = kwargs.get('is_encoded', False)
 
     def __new__(cls, shape=None, num=None, dec_target=None, dt=None, coding_method=('poisson', 'spike_counts', '...'),
                 coding_var_name='O', node_type=('excitatory', 'inhibitory', 'pyramidal', '...'), **kwargs):
@@ -233,6 +248,9 @@ class Encoder(Node):
 
         Encoder._coding_subclasses[name] = coding_class
 
+    def init_state(self):
+        self.index = 0
+
     # initial operation: encoding input features into spike patterns
     def get_input(self):
         self.index = 0
@@ -245,35 +263,44 @@ class Encoder(Node):
 
     # stand alone operation: get spike pattern in every time step
     def next_stage(self):
+        # For hardware applications, call next_stage at each time step to get spike data of the current time step.
         if self.new_input:
             self.get_input()
             self.new_input = False
 
         self.index += 1
+
         return self.all_spikes[self.index-1]
+
+    def reset(self):
+        # Called at the start of each epoch
+        self.init_state()
 
     def build(self, backend):
         self._backend = backend
         self.sim_name = backend.backend_name
         self.device = backend.device
 
-        if self.dt is None:
-            self.dt = backend.dt
+        # if self.dt is None:
+        #     self.dt = backend.dt
         if self.batch_size is not None:
             self._backend.set_batch_size(self.batch_size)
 
-        if self.sim_name == 'pytorch':
-            spikes = self.torch_coding(self.source, self.device)  # (time_step, batch_size, neuron_shape)
-        else:
-            spikes = self.numpy_coding(self.source, self.device)
-        self.all_spikes = spikes
+        # if self.sim_name == 'pytorch':
+        #     spikes = self.torch_coding(self.source, self.device)  # (time_step, batch_size, neuron_shape)
+        # else:
+        #     spikes = self.numpy_coding(self.source, self.device)
+        # self.all_spikes = spikes
 
-        self.shape = spikes[0].shape
+        if self.is_encoded:
+            shape = self.shape[1:]
+        else:
+            shape = self.shape
+        # self.shape = spikes[0].shape
 
         key = self.id + ':' + '{'+self.coding_var_name+'}'
-        self._var_names.append(key)
-        backend.add_variable(key, self.shape, value=0)
-        # backend.register_initial(None, self.get_input, [])
+        self.variable_to_backend(key, shape, value=0)
+        backend.register_initial(None, self.init_state, [])
         backend.register_standalone(key, self.next_stage, [])
 
 
@@ -291,12 +318,12 @@ class Decoder(Node):
         5. 'final_step_voltage': Final_Step_Voltage
     '''
     _coding_subclasses = dict()
-    def __init__(self, shape=None, num=None, dec_target=None,  dt=None, coding_method=('poisson', 'spike_counts', '...'),
+    def __init__(self, num=None, dec_target=None,  dt=None, coding_method=('poisson', 'spike_counts', '...'),
                  coding_var_name='O', node_type=('excitatory', 'inhibitory', 'pyramidal', '...'), **kwargs):
-        super(Decoder, self).__init__(shape, num, dec_target, dt, coding_method, coding_var_name, node_type, **kwargs)
+        super(Decoder, self).__init__(None, num, dec_target, dt, coding_method, coding_var_name, node_type, **kwargs)
         assert num == dec_target.num, ('The num of Decoder is not consistent with neuron_number of NeuronGroup')
 
-    def __new__(cls, shape=None, num=None, dec_target=None, dt=None, coding_method=('poisson', 'spike_counts', '...'),
+    def __new__(cls, num=None, dec_target=None, dt=None, coding_method=('poisson', 'spike_counts', '...'),
                 coding_var_name='O', node_type=('excitatory', 'inhibitory', 'pyramidal', '...'), **kwargs):
         coding_method = coding_method.lower()
         if cls is not Decoder:
@@ -343,6 +370,7 @@ class Decoder(Node):
             else:
                 self.records = np.zeros(dec_shape)
             self.index = 0
+
         self.records[self.index % self.time_step, :] = output
         self.index += 1
         if self.index >= self.time_step:
@@ -352,12 +380,16 @@ class Decoder(Node):
                 self.predict = self.numpy_coding(self.records, self.source, self.device)
         return 0
 
+    def reset(self):
+        # Called at the start of each epoch
+        self.init_state()
+
     def build(self, backend):
         self._backend = backend
         self.sim_name = backend.backend_name
         self.device = backend.device
-        if self.dt is None:
-            self.dt = backend.dt
+        # if self.dt is None:
+        #     self.dt = backend.dt
 
         output_name = self.dec_target.id + ':' + '{'+self.coding_var_name+'}'
         backend.register_initial(None, self.init_state, [])
@@ -380,6 +412,7 @@ class Reward(Node):
                  coding_var_name='O', node_type=('excitatory', 'inhibitory', 'pyramidal', '...'), **kwargs):
         super(Reward, self).__init__(shape, num, dec_target, dt, coding_method, coding_var_name, node_type, **kwargs)
         self.dec_sample_step = kwargs.get('dec_sample_step', 1)
+        self.reward_shape = kwargs.get('reward_shape', (1, ))
 
     def __new__(cls, shape=None, num=None, dec_target=None, dt=None, coding_method=('poisson', 'spike_counts', '...'),
                 coding_var_name='O', node_type=('excitatory', 'inhibitory', 'pyramidal', '...'), **kwargs):
@@ -428,7 +461,7 @@ class Reward(Node):
                 self.records = torch.zeros(dec_shape, device=self.device)
             else:
                 self.records = np.zeros(dec_shape)
-        reward = torch.zeros(1, device=self.device)
+        reward = torch.zeros(self.reward_shape, device=self.device)
         self.records[self.index, :] = output
         self.index += 1
         if self.index >= self.dec_sample_step:
@@ -443,13 +476,14 @@ class Reward(Node):
         self._backend = backend
         self.sim_name = backend.backend_name
         self.device = backend.device
-        if self.dt is None:
-            self.dt = backend.dt
+        # if self.dt is None:
+        #     self.dt = backend.dt
 
         output_name = self.dec_target.id + ':' + '{'+self.coding_var_name+'}'
         backend.register_initial(None, self.init_state, [])
         reward_name = 'Output_Reward'
-        backend.add_variable(reward_name, (1, ), value=self.reward)
+        self.variable_to_backend(reward_name, self.reward_shape, value=0.0) # shape还是要让具体的子类定义吧
+
         backend.register_standalone(reward_name, self.get_reward, [output_name])
 
 
@@ -503,6 +537,9 @@ class Generator(Node):
 
         Generator._coding_subclasses[name] = coding_class
 
+    def init_state(self):
+        self.index = 0
+
     # initial operation: encoding input features into spike patterns
     def get_input(self):
         self.index = 0
@@ -527,8 +564,8 @@ class Generator(Node):
         self._backend = backend
         self.sim_name = backend.backend_name
         self.device = backend.device
-        if self.dt is None:
-            self.dt = backend.dt
+        # if self.dt is None:
+        #     self.dt = backend.dt
 
         if self.sim_name == 'pytorch':
             singlestep_spikes = torch.zeros(self.shape, device=self.device)
@@ -537,12 +574,13 @@ class Generator(Node):
 
         if self.dec_target is None:
             key = self.id + ':' + '{'+self.coding_var_name+'}'
-            backend.add_variable(key, self.shape, value=singlestep_spikes)
+            self.variable_to_backend(key, self.shape, value=singlestep_spikes)
         else:
             key = self.dec_target.id + ':' + '{'+self.coding_var_name+'}'
         self._var_names.append(key)
-        # backend.register_initial(None, self.get_input, [])
+        backend.register_initial(None, self.init_state, [])
         backend.register_standalone(key, self.next_stage, [])
+
 
 # ======================================================================================================================
 # Actions
@@ -562,6 +600,7 @@ class Action(Node):
     def __init__(self, shape=None, num=None, dec_target=None,  dt=None, coding_method=('poisson', 'spike_counts', '...'),
                  coding_var_name='O', node_type=('excitatory', 'inhibitory', 'pyramidal', '...'), **kwargs):
         super(Action, self).__init__(shape, num, dec_target, dt, coding_method, coding_var_name, node_type, **kwargs)
+        self.action = np.zeros((1,))
 
     def __new__(cls, shape=None, num=None, dec_target=None, dt=None, coding_method=('poisson', 'spike_counts', '...'),
                 coding_var_name='O', node_type=('excitatory', 'inhibitory', 'pyramidal', '...'), **kwargs):
@@ -622,8 +661,8 @@ class Action(Node):
         self._backend = backend
         self.sim_name = backend.backend_name
         self.device = backend.device
-        if self.dt is None:
-            self.dt = backend.dt
+        # if self.dt is None:
+        #     self.dt = backend.dt
 
         output_name = self.dec_target.id + ':' + '{'+self.coding_var_name+'}'
         backend.register_initial(None, self.init_state, [])
